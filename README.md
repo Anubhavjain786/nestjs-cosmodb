@@ -1,49 +1,12 @@
-# NestJS Cosmos ORM
+# 🚀 NestJS Cosmos ORM
 
-A clean, type-safe ORM-like abstraction for Azure Cosmos DB in NestJS — inspired by objection.js.
+> A clean, type-safe ORM abstraction for Azure Cosmos DB in NestJS
 
-## ✨ Why this library?
-
-Working with Azure Cosmos DB in NestJS often leads to:
-
-* Direct SDK usage scattered across services
-* No structure for models or repositories
-* Lack of consistency in queries and data access
-
-This library solves that by providing:
-
-* ✅ Repository pattern
-* ✅ Model abstraction with instance methods
-* ✅ Query builder (chainable API)
-* ✅ Relation loading system
-* ✅ Pagination support
-* ✅ Clean NestJS integration
+A structured data layer for NestJS applications using Azure Cosmos DB, providing models, repositories, and a powerful query API — without exposing low-level SDK complexity.
 
 ---
 
-## 🚀 Features
-
-* ORM-like developer experience (inspired by objection.js)
-* Fully typed (TypeScript-first)
-* No Cosmos SDK leakage outside repository
-* Partition key abstraction
-* Relation support (`@HasMany`, `@BelongsTo`)
-* Pagination using continuation tokens
-* Safe update & patch operations
-
----
-
-## 📦 Installation
-
-```bash
-npm install nestjs-cosmodb @azure/cosmos
-```
-
----
-
-## ⚡ Quick Example
-
-### 1. Define Model
+# ⚡ 2-Minute Quick Start
 
 ```ts
 @CosmosModel('users')
@@ -52,38 +15,189 @@ export class User extends BaseModel {
   id: string;
   name: string;
 }
+
+const user = await userRepository.create({
+  id: 'u1',
+  name: 'John',
+});
+
+await user.$query().patch({ name: 'Updated' });
+
+const result = await User.query().where('name', '=', 'John').first();
 ```
 
 ---
 
-### 2. Use Repository
+# ✨ Features
+
+* 🧱 Structured data layer (Model + Repository)
+* 🔗 Model instance methods (`$query`, `$load`)
+* 🔍 Chainable query builder
+* 🔄 Patch vs Update support
+* 🔗 Relation system (`@HasMany`, `@BelongsTo`)
+* 📄 Pagination using continuation tokens
+* ⚡ Optimized for Cosmos DB patterns
+* 🛡 No SDK leakage outside repository
+* 🧾 Fully typed (TypeScript-first)
+
+---
+
+# 🤔 Why this library?
+
+Working directly with Azure Cosmos DB often leads to:
+
+* Scattered SDK usage across services
+* Repetitive query logic
+* Lack of structure in data access
+
+This library provides a consistent, scalable approach:
 
 ```ts
-const user = await userRepository.create({
-  id: 'u1',
-  name: 'John',
+// Instead of low-level SDK usage
+User.query().where('name', '=', 'John')
+```
+
+---
+
+# 📦 Installation
+
+```bash
+npm install nestjs-cosmodb @azure/cosmos
+```
+
+---
+
+# 🧱 Setup
+
+## 1. Register CosmosModule
+
+```ts
+import { CosmosModule } from 'nestjs-cosmodb';
+
+@Module({
+  imports: [
+    CosmosModule.forRoot({
+      endpoint: process.env.COSMOS_ENDPOINT,
+      key: process.env.COSMOS_KEY,
+      database: 'my-db',
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+---
+
+## 2. Define a Model
+
+```ts
+import { BaseModel, CosmosModel, PartitionKey } from 'nestjs-cosmodb';
+
+@CosmosModel('users')
+@PartitionKey('id') // recommended
+export class User extends BaseModel {
+  id: string;
+  name: string;
+  email: string;
+}
+```
+
+---
+
+## 3. Create Repository
+
+```ts
+@Injectable()
+export class UserRepository extends BaseRepository<User> {
+  constructor(cosmosService) {
+    super(cosmosService, User);
+  }
+}
+```
+
+---
+
+## 4. Use in Service
+
+```ts
+@Injectable()
+export class UserService {
+  constructor(private readonly userRepo: UserRepository) {}
+
+  async createUser() {
+    return this.userRepo.create({
+      id: 'u1',
+      name: 'John',
+      email: 'john@test.com',
+    });
+  }
+}
+```
+
+---
+
+# 🔍 Querying
+
+```ts
+// Find by ID
+const user = await userRepo.findById('u1');
+
+// Query builder
+const users = await User.query()
+  .where('name', '=', 'John')
+  .limit(10)
+  .fetch();
+
+// First result
+const user = await User.query().first();
+```
+
+---
+
+# ✏️ Updates
+
+## Partial Update
+
+```ts
+await user.$query().patch({
+  name: 'Updated Name',
 });
 ```
 
 ---
 
-### 3. Query API
+## Full Replace
 
 ```ts
-await User.query().where('name', '=', 'John').first();
+await user.$query().update({
+  id: 'u1',
+  name: 'Full Replace',
+  email: 'new@test.com',
+});
 ```
 
 ---
 
-### 4. Instance Methods
+# ❌ Delete
 
 ```ts
-await user.$query().patch({ name: 'Updated' });
+await user.$query().delete();
 ```
 
 ---
 
-### 5. Relations
+# 🔗 Relations
+
+## Define relation
+
+```ts
+@HasMany(() => Post, 'userId')
+posts: Post[];
+```
+
+---
+
+## Load relation
 
 ```ts
 await user.$load('posts');
@@ -91,39 +205,47 @@ await user.$load('posts');
 
 ---
 
-### 6. Pagination
+# 📄 Pagination
 
 ```ts
-const result = await userRepository
+const result = await userRepo
   .query()
   .limit(10)
   .paginate();
 
-console.log(result.data, result.nextToken);
+console.log(result.data);
+console.log(result.nextToken);
 ```
 
 ---
 
-## ⚠️ Important Notes
+# ⚠️ Important Notes
 
-### Partition Key Strategy
+## Partition Key Strategy
 
-* Default recommendation: use `id` as partition key
-* Avoid cross-partition queries for better performance
+Recommended:
 
----
-
-### Cosmos DB Limitations
-
-* No joins (relations are manually resolved)
-* Transactions limited to same partition
-* Pagination uses continuation tokens (not offset)
-
----
-
-## 🏗 Architecture
-
+```ts
+@PartitionKey('id')
 ```
+
+* Enables efficient point reads
+* Avoids cross-partition queries
+* Simplifies usage
+
+---
+
+## Cosmos DB Limitations
+
+* No joins (relations are resolved manually)
+* Transactions are limited to a single partition
+* Pagination uses continuation tokens
+
+---
+
+# 🧠 Mental Model
+
+```text
 Controller → Service → Repository → Cosmos DB
                      ↑
                   Model
@@ -131,31 +253,21 @@ Controller → Service → Repository → Cosmos DB
 
 ---
 
-## 🧠 Philosophy
+# 📌 Roadmap
 
-This library does NOT try to replicate SQL ORM behavior.
-
-Instead, it provides:
-
-> A structured, predictable, and scalable way to work with Cosmos DB in NestJS.
-
----
-
-## 📌 Roadmap
-
-* [ ] Advanced eager loading
+* [ ] Advanced relation loading
 * [ ] Query optimization helpers
-* [ ] Indexing guidance
+* [ ] Indexing recommendations
 * [ ] Multi-tenant support
 
 ---
 
-## 🤝 Contributing
+# 🤝 Contributing
 
-PRs are welcome. Feel free to open issues for suggestions or bugs.
+PRs are welcome! Open an issue for suggestions or improvements.
 
 ---
 
-## 📄 License
+# 📄 License
 
 MIT
