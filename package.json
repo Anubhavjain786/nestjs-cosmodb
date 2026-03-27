@@ -1,12 +1,16 @@
 {
     "name": "nestjs-cosmodb",
-    "version": "0.1.0",
-    "private": true,
-    "description": "NestJS Cosmos DB integration module",
+    "version": "1.0.0",
+    "description": "ORM-like abstraction for Azure Cosmos DB in NestJS",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
+    "author": "Anubhav Jain <anubhavj660@gmail.com>",
+    "files": [
+        "dist"
+    ],
     "scripts": {
-        "build": "tsc -p tsconfig.json"
+        "build": "tsc",
+        "prepublishOnly": "npm run build"
     },
     "dependencies": {
         "@azure/cosmos": "^4.3.0",
@@ -15,5 +19,9 @@
     },
     "devDependencies": {
         "typescript": "^5.8.2"
+    },
+    "peerDependencies": {
+        "@nestjs/common": "^10",
+        "@azure/cosmos": "^4"
     }
 }
