@@ -139,6 +139,7 @@ export interface CosmosRegisteredRepository<
   TModel extends CosmosModelInstance = CosmosModelInstance,
 > {
   query(model?: TModel): CosmosQueryBuilder<TModel>;
+  delete(model: TModel): Promise<void>;
   patch(model: TModel, data: Partial<TModel>): Promise<TModel>;
   update(model: TModel, data: Partial<TModel>): Promise<TModel>;
   loadRelation<TRelation = unknown>(

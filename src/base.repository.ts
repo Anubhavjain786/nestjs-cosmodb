@@ -282,11 +282,7 @@ export abstract class BaseRepository<TModel extends BaseModel> {
   resolvePartitionKey(
     source: Partial<TModel> | TModel | string,
   ): PartitionKey | undefined {
-    const partitionKeyField = this.modelMetadata.partitionKey;
-
-    if (!partitionKeyField) {
-      return undefined;
-    }
+    const partitionKeyField = this.getPartitionKeyField();
 
     if (typeof source === "string") {
       return this.toPartitionKeyValue(source);
@@ -889,11 +885,7 @@ export abstract class BaseRepository<TModel extends BaseModel> {
   }
 
   private assertPartitionKeyValue(data: PersistedRecord): void {
-    const partitionKeyField = this.modelMetadata.partitionKey;
-
-    if (!partitionKeyField) {
-      return;
-    }
+    const partitionKeyField = this.getPartitionKeyField();
 
     const partitionKeyValue = this.resolvePartitionKeyValue(data);
 
@@ -902,6 +894,10 @@ export abstract class BaseRepository<TModel extends BaseModel> {
         `${this.modelClass.name} requires partition key field "${partitionKeyField}".`,
       );
     }
+  }
+
+  private getPartitionKeyField(): string {
+    return this.modelMetadata.partitionKey ?? "id";
   }
 
   private normalizeDates(data: PersistedRecord): PersistedRecord {

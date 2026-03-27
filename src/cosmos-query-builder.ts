@@ -68,9 +68,6 @@ export class CosmosQueryBuilder<TModel extends CosmosModelInstance> {
     value: TModel[TField],
   ): this {
     this.assertFieldName(field);
-    this.whereClauses.length = 0;
-    this.parameters.length = 0;
-    this.parameterIndex = 0;
 
     return this.appendWhereClause(field, operator, value);
   }
@@ -145,6 +142,10 @@ export class CosmosQueryBuilder<TModel extends CosmosModelInstance> {
     return this;
   }
 
+  withGraphFetched(relationNames: string | readonly string[]): this {
+    return this.with(relationNames);
+  }
+
   async execute(): Promise<TModel[]> {
     return this.requireRepository().executeQueryBuilder(this);
   }
@@ -171,6 +172,12 @@ export class CosmosQueryBuilder<TModel extends CosmosModelInstance> {
     const targetModel = this.requireTargetModel();
 
     return this.requireRepository().update(targetModel, data);
+  }
+
+  async delete(): Promise<void> {
+    const targetModel = this.requireTargetModel();
+
+    await this.requireRepository().delete(targetModel);
   }
 
   toPaginatedQuery(continuationToken?: string): CosmosPaginatedQuery<TModel> {
@@ -337,7 +344,7 @@ export class CosmosQueryBuilder<TModel extends CosmosModelInstance> {
   private requireTargetModel(): TModel {
     if (!this.targetModel) {
       throw new TypeError(
-        "patch() and update() require an instance-bound query builder. Use model.$query().",
+        "patch(), update(), and delete() require an instance-bound query builder. Use model.$query().",
       );
     }
 
