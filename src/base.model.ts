@@ -1,13 +1,18 @@
 import { getRelationMetadata } from "./cosmos.metadata";
 import {
+  CosmosModelConstructor,
   CosmosModelInstance,
   CosmosModelRepository,
 } from "./cosmos.interfaces";
+import { CosmosQueryBuilder } from "./cosmos-query-builder";
+import { getRegisteredRepository } from "./repository-registry";
 
 type BaseModelMethodKeys =
   | "$save"
+  | "$patch"
   | "$update"
   | "$delete"
+  | "$query"
   | "$load"
   | "attachRepository";
 
@@ -23,6 +28,18 @@ export abstract class BaseModel implements CosmosModelInstance {
 
   #repository?: CosmosModelRepository<this>;
 
+  static query<TModel extends BaseModel>(
+    this: CosmosModelConstructor<TModel>,
+  ): CosmosQueryBuilder<TModel> {
+    const repository = getRegisteredRepository(this);
+
+    if (!repository) {
+      throw new Error(`No repository is registered for ${this.name}.`);
+    }
+
+    return repository.query();
+  }
+
   attachRepository(repository: CosmosModelRepository<this>): this {
     this.#repository = repository;
 
@@ -33,6 +50,15 @@ export abstract class BaseModel implements CosmosModelInstance {
     const savedModel = await this.getRequiredRepository().save(this);
 
     return this.assignPersistedState(savedModel);
+  }
+
+  async $patch(data: BaseModelUpdateData<this>): Promise<this> {
+    const patchedModel = await this.getRequiredRepository().patch(
+      this,
+      data as Partial<this>,
+    );
+
+    return this.assignPersistedState(patchedModel);
   }
 
   async $update(data: BaseModelUpdateData<this>): Promise<this> {
@@ -46,6 +72,10 @@ export abstract class BaseModel implements CosmosModelInstance {
 
   async $delete(): Promise<void> {
     await this.getRequiredRepository().delete(this);
+  }
+
+  $query(): CosmosQueryBuilder<this> {
+    return this.getRequiredRepository().query(this);
   }
 
   async $load(relationName: string): Promise<this> {

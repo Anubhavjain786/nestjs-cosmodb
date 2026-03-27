@@ -9,3 +9,5 @@ export * from "./cosmos.metadata";
 export * from "./cosmos.module";
 export * from "./cosmos-query-builder";
 export * from "./cosmos.service";
+export * from "./relation-loader";
+export * from "./repository-registry";

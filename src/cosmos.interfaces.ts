@@ -1,4 +1,10 @@
-import type { CosmosClientOptions, OperationInput } from "@azure/cosmos";
+import type {
+  CosmosClientOptions,
+  OperationInput,
+  PartitionKey,
+} from "@azure/cosmos";
+
+import type { CosmosQueryBuilder } from "./cosmos-query-builder";
 
 export interface CosmosModuleOptions {
   endpoint: string;
@@ -53,8 +59,10 @@ export interface CosmosModelRepository<
   TModel extends CosmosModelInstance = CosmosModelInstance,
 > {
   save(model: TModel): Promise<TModel>;
+  patch(model: TModel, data: Partial<TModel>): Promise<TModel>;
   update(model: TModel, data: Partial<TModel>): Promise<TModel>;
   delete(model: TModel): Promise<void>;
+  query(model?: TModel): CosmosQueryBuilder<TModel>;
   loadRelation<TRelation = unknown>(
     model: TModel,
     relationName: string,
@@ -107,6 +115,7 @@ export interface CosmosTransactionContext<
   TModel extends CosmosModelInstance = CosmosModelInstance,
 > {
   create(data: Partial<TModel>): Promise<TModel>;
+  patch(id: string, data: Partial<TModel>): Promise<TModel>;
   update(id: string, data: Partial<TModel>): Promise<TModel>;
   delete(id: string): Promise<void>;
 }
@@ -120,4 +129,32 @@ export interface CosmosTransactionOperation<
   model: TModel;
   partitionKey?: unknown;
   batchOperation: OperationInput;
+}
+
+export interface CosmosQueryExecutionOptions {
+  continuationToken?: string;
+}
+
+export interface CosmosRegisteredRepository<
+  TModel extends CosmosModelInstance = CosmosModelInstance,
+> {
+  query(model?: TModel): CosmosQueryBuilder<TModel>;
+  patch(model: TModel, data: Partial<TModel>): Promise<TModel>;
+  update(model: TModel, data: Partial<TModel>): Promise<TModel>;
+  loadRelation<TRelation = unknown>(
+    model: TModel,
+    relationName: string,
+  ): Promise<TRelation>;
+  loadEagerRelations(
+    models: readonly TModel[],
+    relationNames: readonly string[],
+  ): Promise<TModel[]>;
+  executeQueryBuilder(builder: CosmosQueryBuilder<TModel>): Promise<TModel[]>;
+  executePaginatedQuery(
+    builder: CosmosQueryBuilder<TModel>,
+    options?: CosmosQueryExecutionOptions,
+  ): Promise<CosmosPaginatedResult<TModel>>;
+  resolvePartitionKey(
+    source: Partial<TModel> | TModel | string,
+  ): PartitionKey | undefined;
 }

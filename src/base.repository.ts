@@ -10,7 +10,6 @@ import {
   BulkOperationType,
   type JSONValue,
   type JSONObject,
-  type OperationInput,
   type OperationResponse,
   type PartitionKey,
   type SqlQuerySpec,
@@ -21,40 +20,43 @@ import {
   CosmosPaginatedQuery,
   CosmosQueryBuilder,
 } from "./cosmos-query-builder";
-import { CosmosService } from "./cosmos.service";
 import {
   CosmosModelConstructor,
-  CosmosRepositoryConfig,
   CosmosModelMetadata,
   CosmosPaginatedResult,
   CosmosQueryDefinition,
+  CosmosQueryExecutionOptions,
   CosmosRelationLoadResult,
   CosmosRelationMetadata,
+  CosmosRepositoryConfig,
   CosmosTransactionContext,
   CosmosTransactionOperation,
 } from "./cosmos.interfaces";
 import { getModelMetadata, getRelationMetadata } from "./cosmos.metadata";
+import { RelationLoader } from "./relation-loader";
+import {
+  getRegisteredRepository,
+  registerRepository,
+} from "./repository-registry";
+import { CosmosService } from "./cosmos.service";
+
+type RepositoryReservedKeys =
+  | "$save"
+  | "$patch"
+  | "$update"
+  | "$delete"
+  | "$query"
+  | "$load"
+  | "attachRepository";
 
 type RepositoryModelData<TModel extends BaseModel> = Partial<
   Omit<TModel, RepositoryReservedKeys>
 >;
 
-type RepositoryReservedKeys =
-  | "$save"
-  | "$update"
-  | "$delete"
-  | "$load"
-  | "attachRepository";
-
 type PersistedRecord = Record<string, unknown>;
 
 @Injectable()
 export abstract class BaseRepository<TModel extends BaseModel> {
-  private static readonly repositoryRegistry = new Map<
-    Function,
-    BaseRepository<BaseModel>
-  >();
-
   protected readonly logger = new Logger(this.constructor.name);
   private readonly modelMetadata: CosmosModelMetadata;
   private readonly repositoryConfig: Required<
@@ -70,10 +72,7 @@ export abstract class BaseRepository<TModel extends BaseModel> {
   ) {
     this.modelMetadata = this.getRequiredModelMetadata();
     this.repositoryConfig = this.resolveRepositoryConfig(repositoryConfig);
-    BaseRepository.repositoryRegistry.set(
-      this.modelClass,
-      this as unknown as BaseRepository<BaseModel>,
-    );
+    registerRepository(this.modelClass, this);
   }
 
   async create(data: RepositoryModelData<TModel>): Promise<TModel> {
@@ -84,16 +83,33 @@ export abstract class BaseRepository<TModel extends BaseModel> {
 
   async findById(id: string): Promise<TModel | null> {
     const normalizedId = this.normalizeRequiredString(id, "id");
-    const queryBuilder = this.query()
-      .where(
-        "id" as Extract<keyof TModel, string>,
-        "=",
-        normalizedId as TModel[Extract<keyof TModel, string>],
-      )
-      .limit(1);
-    const [model] = await this.fetch(queryBuilder);
+    const partitionKey = this.resolvePartitionKey(normalizedId);
 
-    return model ?? null;
+    try {
+      const { resource } = await this.getContainer()
+        .item(normalizedId, partitionKey)
+        .read<PersistedRecord>();
+
+      if (!resource) {
+        return null;
+      }
+
+      const model = this.hydrate(resource);
+
+      if (this.repositoryConfig.softDelete && model.deletedAt) {
+        return null;
+      }
+
+      this.logIfEnabled("findById", { id: normalizedId });
+
+      return model;
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        return null;
+      }
+
+      throw this.handleRepositoryError(error, "findById");
+    }
   }
 
   async save(model: TModel): Promise<TModel> {
@@ -102,9 +118,9 @@ export abstract class BaseRepository<TModel extends BaseModel> {
     return this.persistModel(model, operation);
   }
 
-  async update(id: string, data: BaseModelUpdateData<TModel>): Promise<TModel>;
-  async update(model: TModel, data: Partial<TModel>): Promise<TModel>;
-  async update(
+  async patch(id: string, data: BaseModelUpdateData<TModel>): Promise<TModel>;
+  async patch(model: TModel, data: Partial<TModel>): Promise<TModel>;
+  async patch(
     modelOrId: string | TModel,
     data: Partial<TModel>,
   ): Promise<TModel> {
@@ -118,6 +134,21 @@ export abstract class BaseRepository<TModel extends BaseModel> {
     return this.persistModel(model, "update");
   }
 
+  async update(id: string, data: BaseModelUpdateData<TModel>): Promise<TModel>;
+  async update(model: TModel, data: Partial<TModel>): Promise<TModel>;
+  async update(
+    modelOrId: string | TModel,
+    data: Partial<TModel>,
+  ): Promise<TModel> {
+    const existingModel =
+      typeof modelOrId === "string"
+        ? await this.requireModelById(modelOrId)
+        : modelOrId;
+    const replacementModel = this.createReplacementModel(existingModel, data);
+
+    return this.persistModel(replacementModel, "update");
+  }
+
   async delete(id: string): Promise<void>;
   async delete(model: TModel): Promise<void>;
   async delete(modelOrId: string | TModel): Promise<void> {
@@ -128,17 +159,14 @@ export abstract class BaseRepository<TModel extends BaseModel> {
 
     if (this.repositoryConfig.softDelete) {
       model.deletedAt = new Date();
-
       await this.persistModel(model, "update");
       return;
     }
 
-    const partitionKeyValue = this.resolvePartitionKeyValue(
-      this.prepareForPersistence(model),
-    );
-
     try {
-      await this.getContainer().item(model.id, partitionKeyValue).delete();
+      await this.getContainer()
+        .item(model.id, this.resolvePartitionKey(model))
+        .delete();
       this.logIfEnabled("delete", { id: model.id });
     } catch (error) {
       throw this.handleRepositoryError(error, "delete");
@@ -159,9 +187,20 @@ export abstract class BaseRepository<TModel extends BaseModel> {
 
         return model;
       },
-      update: async (id, data) => {
+      patch: async (id, data) => {
         const model = await this.requireModelById(id);
         Object.assign(model, data);
+
+        await this.runBeforeHook("update", model);
+        operations.push(this.createBatchOperationForReplace(model));
+
+        return model;
+      },
+      update: async (id, data) => {
+        const model = this.createReplacementModel(
+          await this.requireModelById(id),
+          data,
+        );
 
         await this.runBeforeHook("update", model);
         operations.push(this.createBatchOperationForReplace(model));
@@ -188,8 +227,74 @@ export abstract class BaseRepository<TModel extends BaseModel> {
     return result;
   }
 
-  query(): CosmosQueryBuilder<TModel> {
-    return new CosmosQueryBuilder<TModel>();
+  query(model?: TModel): CosmosQueryBuilder<TModel> {
+    return new CosmosQueryBuilder<TModel>(this, this.modelClass, model);
+  }
+
+  async executeQueryBuilder(
+    queryBuilder: CosmosQueryBuilder<TModel>,
+  ): Promise<TModel[]> {
+    const queryDefinition = this.buildQueryDefinition(queryBuilder);
+
+    try {
+      const { resources } = await this.getContainer()
+        .items.query<PersistedRecord>(this.toSqlQuerySpec(queryDefinition))
+        .fetchAll();
+      const models = resources.map((resource) => this.hydrate(resource));
+
+      await this.loadEagerRelations(models, queryBuilder.getEagerRelations());
+      this.logIfEnabled("fetch", { query: queryDefinition.query });
+
+      return models;
+    } catch (error) {
+      throw this.handleRepositoryError(error, "fetch");
+    }
+  }
+
+  async executePaginatedQuery(
+    queryBuilder: CosmosQueryBuilder<TModel>,
+    options?: CosmosQueryExecutionOptions,
+  ): Promise<CosmosPaginatedResult<TModel>> {
+    const paginatedQuery = queryBuilder.toPaginatedQuery(
+      options?.continuationToken,
+    );
+
+    return this.fetchPaginated(
+      paginatedQuery,
+      queryBuilder.getEagerRelations(),
+    );
+  }
+
+  async loadEagerRelations(
+    models: readonly TModel[],
+    relationNames: readonly string[],
+  ): Promise<TModel[]> {
+    return new RelationLoader<TModel>(this).load(models, relationNames);
+  }
+
+  async batchLoadRelation(
+    models: readonly TModel[],
+    relationName: string,
+  ): Promise<Array<CosmosRelationLoadResult<unknown>>> {
+    return this.loadRelations(models, relationName);
+  }
+
+  resolvePartitionKey(
+    source: Partial<TModel> | TModel | string,
+  ): PartitionKey | undefined {
+    const partitionKeyField = this.modelMetadata.partitionKey;
+
+    if (!partitionKeyField) {
+      return undefined;
+    }
+
+    if (typeof source === "string") {
+      return this.toPartitionKeyValue(source);
+    }
+
+    return this.toPartitionKeyValue(
+      (source as Record<string, unknown>)[partitionKeyField],
+    );
   }
 
   async fetch(
@@ -200,24 +305,13 @@ export abstract class BaseRepository<TModel extends BaseModel> {
     queryBuilder: CosmosQueryBuilder<TModel> | CosmosPaginatedQuery<TModel>,
   ): Promise<TModel[] | CosmosPaginatedResult<TModel>> {
     if (queryBuilder instanceof CosmosPaginatedQuery) {
-      return this.fetchPaginated(queryBuilder);
+      return this.fetchPaginated(
+        queryBuilder,
+        queryBuilder.getQueryBuilder().getEagerRelations(),
+      );
     }
 
-    const queryDefinition = queryBuilder.build();
-
-    try {
-      const { resources } = await this.getContainer()
-        .items.query<PersistedRecord>(
-          this.toSqlQuerySpec(this.applyDefaultFilters(queryDefinition)),
-        )
-        .fetchAll();
-
-      this.logIfEnabled("fetch", { query: queryDefinition.query });
-
-      return resources.map((resource) => this.hydrate(resource));
-    } catch (error) {
-      throw this.handleRepositoryError(error, "fetch");
-    }
+    return this.executeQueryBuilder(queryBuilder);
   }
 
   async loadRelation<TRelation = unknown>(
@@ -228,7 +322,7 @@ export abstract class BaseRepository<TModel extends BaseModel> {
 
     if (!result) {
       throw new NotImplementedException(
-        `Relation loading for \"${relationName}\" did not return a result on ${this.constructor.name}.`,
+        `Relation loading for "${relationName}" did not return a result on ${this.constructor.name}.`,
       );
     }
 
@@ -278,6 +372,22 @@ export abstract class BaseRepository<TModel extends BaseModel> {
 
   protected getContainerName(): string {
     return this.modelMetadata.containerName;
+  }
+
+  protected async fetchByDefinition(
+    queryDefinition: CosmosQueryDefinition,
+  ): Promise<TModel[]> {
+    try {
+      const { resources } = await this.getContainer()
+        .items.query<PersistedRecord>(
+          this.toSqlQuerySpec(this.applyDefaultFilters(queryDefinition)),
+        )
+        .fetchAll();
+
+      return resources.map((resource) => this.hydrate(resource));
+    } catch (error) {
+      throw this.handleRepositoryError(error, "fetch");
+    }
   }
 
   private createModelFromData(data: RepositoryModelData<TModel>): TModel {
@@ -344,24 +454,9 @@ export abstract class BaseRepository<TModel extends BaseModel> {
     };
   }
 
-  protected async fetchByDefinition(
-    queryDefinition: CosmosQueryDefinition,
-  ): Promise<TModel[]> {
-    try {
-      const { resources } = await this.getContainer()
-        .items.query<PersistedRecord>(
-          this.toSqlQuerySpec(this.applyDefaultFilters(queryDefinition)),
-        )
-        .fetchAll();
-
-      return resources.map((resource) => this.hydrate(resource));
-    } catch (error) {
-      throw this.handleRepositoryError(error, "fetch");
-    }
-  }
-
   private async fetchPaginated(
     queryBuilder: CosmosPaginatedQuery<TModel>,
+    eagerRelations: readonly string[] = [],
   ): Promise<CosmosPaginatedResult<TModel>> {
     try {
       const response = await this.getContainer()
@@ -380,8 +475,14 @@ export abstract class BaseRepository<TModel extends BaseModel> {
         continuationToken: queryBuilder.getContinuationToken(),
       });
 
+      const models = response.resources.map((resource) =>
+        this.hydrate(resource),
+      );
+
+      await this.loadEagerRelations(models, eagerRelations);
+
       return {
-        data: response.resources.map((resource) => this.hydrate(resource)),
+        data: models,
         nextToken: response.continuationToken || undefined,
       };
     } catch (error) {
@@ -445,7 +546,7 @@ export abstract class BaseRepository<TModel extends BaseModel> {
 
     if (!relation) {
       throw new NotFoundException(
-        `Relation \"${relationName}\" is not defined on ${this.modelClass.name}.`,
+        `Relation "${relationName}" is not defined on ${this.modelClass.name}.`,
       );
     }
 
@@ -455,8 +556,8 @@ export abstract class BaseRepository<TModel extends BaseModel> {
   private getRelatedRepository(
     relation: CosmosRelationMetadata,
   ): BaseRepository<BaseModel> {
-    const relatedModel = relation.target();
-    const repository = BaseRepository.repositoryRegistry.get(relatedModel);
+    const relatedModel = relation.target() as CosmosModelConstructor<BaseModel>;
+    const repository = getRegisteredRepository(relatedModel);
 
     if (!repository) {
       throw new NotImplementedException(
@@ -464,7 +565,7 @@ export abstract class BaseRepository<TModel extends BaseModel> {
       );
     }
 
-    return repository;
+    return repository as unknown as BaseRepository<BaseModel>;
   }
 
   private async loadHasManyRelation(
@@ -598,7 +699,7 @@ export abstract class BaseRepository<TModel extends BaseModel> {
 
     if (!model) {
       throw new NotFoundException(
-        `${this.modelClass.name} with id \"${id}\" was not found.`,
+        `${this.modelClass.name} with id "${id}" was not found.`,
       );
     }
 
@@ -690,6 +791,8 @@ export abstract class BaseRepository<TModel extends BaseModel> {
 
       await this.delete(operation.model);
     }
+
+    await this.runAfterTransactionHooks(operations);
     this.logIfEnabled("transaction", {
       operationCount: operations.length,
       batched: false,
@@ -748,16 +851,41 @@ export abstract class BaseRepository<TModel extends BaseModel> {
     }
   }
 
+  private createReplacementModel(
+    existingModel: TModel,
+    data: Partial<TModel>,
+  ): TModel {
+    const baseData: PersistedRecord = {
+      id: existingModel.id,
+    };
+    const partitionKeyField = this.modelMetadata.partitionKey;
+
+    if (this.repositoryConfig.timestamps && existingModel.createdAt) {
+      baseData.createdAt = existingModel.createdAt;
+    }
+
+    if (existingModel.deletedAt) {
+      baseData.deletedAt = existingModel.deletedAt;
+    }
+
+    if (partitionKeyField && partitionKeyField !== "id") {
+      baseData[partitionKeyField] = this.readFieldValue(
+        existingModel,
+        partitionKeyField,
+      );
+    }
+
+    return this.hydrate({
+      ...baseData,
+      ...(data as PersistedRecord),
+      id: existingModel.id,
+    });
+  }
+
   private resolvePartitionKeyValue(
     data: PersistedRecord,
   ): PartitionKey | undefined {
-    const partitionKeyField = this.modelMetadata.partitionKey;
-
-    if (!partitionKeyField) {
-      return undefined;
-    }
-
-    return this.toPartitionKeyValue(data[partitionKeyField]);
+    return this.resolvePartitionKey(data as Partial<TModel>);
   }
 
   private assertPartitionKeyValue(data: PersistedRecord): void {
@@ -771,7 +899,7 @@ export abstract class BaseRepository<TModel extends BaseModel> {
 
     if (partitionKeyValue === undefined || partitionKeyValue === null) {
       throw new BadRequestException(
-        `${this.modelClass.name} requires partition key field \"${partitionKeyField}\".`,
+        `${this.modelClass.name} requires partition key field "${partitionKeyField}".`,
       );
     }
   }
@@ -955,6 +1083,19 @@ export abstract class BaseRepository<TModel extends BaseModel> {
     }
 
     return normalizedValue;
+  }
+
+  private isNotFoundError(error: unknown): boolean {
+    return (
+      (typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error as { code?: number }).code === 404) ||
+      (typeof error === "object" &&
+        error !== null &&
+        "statusCode" in error &&
+        (error as { statusCode?: number }).statusCode === 404)
+    );
   }
 
   private handleRepositoryError(error: unknown, operation: string): Error {
