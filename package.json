@@ -8,6 +8,20 @@
     "files": [
         "dist"
     ],
+    "keywords": [
+        "nestjs",
+        "cosmosdb",
+        "azure-cosmos",
+        "orm",
+        "nosql",
+        "repository-pattern",
+        "typescript"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Anubhavjain786/nestjs-cosmodb"
+    },
+    "homepage": "https://github.com/Anubhavjain786/nestjs-cosmodb#readme",
     "scripts": {
         "build": "tsc",
         "prepublishOnly": "npm run build"
